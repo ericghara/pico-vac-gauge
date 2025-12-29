@@ -7,7 +7,7 @@ Project template for pico board. It uses picoprobe and openocd for debugging.
 
 `git submodule add https://github.com/raspberrypi/pico-sdk.git`
 
-`git submodule update --init`
+`git submodule update --init --recursive`
 
 Use the build button run of course will have an error.  The `uf2` file will be located in `cmake-build-*/some_project.uf2`
 

@@ -2,7 +2,6 @@
 
 build
 cmake-*
-pico-sdk
 
 .DS_Store
 
