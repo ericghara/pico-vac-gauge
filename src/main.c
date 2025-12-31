@@ -160,8 +160,6 @@ int main() {
         cnt++;
 
         if (cnt == 1000) {
-            double pres_0 = convert_raw(channels[0]->accumulator, channels[0]->sample_cnt);
-            double pres_1 = convert_raw(channels[1]->accumulator, channels[1]->sample_cnt);
             log_stats(channels[0]);
             log_stats(channels[1]);
             cnt = 0;
