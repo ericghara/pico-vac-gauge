@@ -64,28 +64,32 @@ typedef struct ChannelData
 } ChannelData_t;
 
 /**
+ * Zero out all fields in ChannelData except `adc_num`
+ * @param channel struct to reset
+ */
+void reset(ChannelData_t* channel)
+{
+    void* start_p = &channel->sample_cnt;
+    uint size_b = sizeof(ChannelData_t)+NUM_BUCKETS * sizeof(uint);
+    // clear everything after adc_num field
+    memset(start_p, 0, size_b - sizeof(uint));
+}
+
+/**
  * Initialize a ChannelData
  * @param adc_num ADC number channel should be created for
  * @return initialized channel data struct with all fields zeroed except `adc_num`
  */
 ChannelData_t* init_channel_data(uint adc_num)
 {
-    // change me if fields added to ChannelData
-    ChannelData_t* channel = (ChannelData_t*) calloc(3+NUM_BUCKETS, sizeof(unsigned int));
+    uint size_b = sizeof(ChannelData_t)+NUM_BUCKETS * sizeof(uint);
+    ChannelData_t* channel = (ChannelData_t*) malloc(size_b);
     channel->adc_num = adc_num;
+    reset(channel);
     return channel;
 }
 
-/**
- * Zero out all fields in ChannelData except `adc_num`
- * @param channel struct to reset
- */
-void reset(ChannelData_t* channel)
-{
-    void* start_t = &channel->sample_cnt;
-    // change me if fields added to channel data, should preserve adc_num but clear everything else
-    memset(start_t, 0, 2+NUM_BUCKETS*sizeof(unsigned int));
-}
+
 
 /**
  * Record a single measurement
