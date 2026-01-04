@@ -18,7 +18,7 @@ uint16_t capture_buffer[CAPTURE_DEPTH];
 const double V_REF = 5.;
 // Multiple MPXV6615V V_OUT is scaled by via resistor divider
 // to allow 3V3 ADC to interface with ~5V sensor
-// Note: Max voltage ADC should see is REF_VOLTAGE * 0.92 (at atmospheric pressure)
+// Note: Max voltage fed into divider is REF_VOLTAGE * 0.92 (at atmospheric pressure)
 const double V_OUT_MULTIPLE = 2400. / (1000 + 2400);
 const uint ADC_0 = 0;
 const uint ADC_1 = 1;
@@ -30,6 +30,8 @@ const uint ADC_CHANNEL_MASK = 1 << ADC_0 | 1 << ADC_1;
 */
 
 // buckets raw samples will be placed in
+// ADC has a significant resolution of about 9 bits, so num buckets
+// should be greater to avoid loss
 const uint NUM_BUCKETS = 1 << 11;
 // bits to shift raw adc reading right to find bucket
 const uint BUCKET_SHIFT = 1;
