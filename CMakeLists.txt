@@ -13,7 +13,7 @@ add_executable(pico_vac_gauge
         src/main.c
 )
 
-target_link_libraries(pico_vac_gauge pico_stdlib hardware_adc)
+target_link_libraries(pico_vac_gauge pico_stdlib hardware_adc hardware_dma)
 
 pico_enable_stdio_usb(pico_vac_gauge 1)
 pico_enable_stdio_uart(pico_vac_gauge 0)
