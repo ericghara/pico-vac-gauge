@@ -20,6 +20,11 @@ const double V_REF = 5.;
 // to allow 3V3 ADC to interface with ~5V sensor
 // Note: Max voltage fed into divider is REF_VOLTAGE * 0.92 (at atmospheric pressure)
 const double V_OUT_MULTIPLE = 2400. / (1000 + 2400);
+// voltage under 0 vacuum (i.e. atmospheric pressure)
+const double OFFSET = V_REF * 0.92;
+// response kpa/v
+const double SCALE = V_REF * 0.007652;
+
 const uint ADC_0 = 0;
 const uint ADC_1 = 1;
 const uint ADC_CHANNEL_MASK = 1 << ADC_0 | 1 << ADC_1;
@@ -48,29 +53,29 @@ const float CONVERSION_FACTOR = 3.3f / (1 << 12);
  * @param num_samples number of samples
  * @return gauge pressure in kPa
  */
-double convert_raw(uint accumulator, uint num_samples)
+double convert_raw(uint accumulator, uint num_samples, double zero_offset)
 {
-    // voltage under 0 vacuum (i.e. atmospheric pressure)
-    const static double OFFSET = V_REF * 0.92;
-    // response kpa/v
-    const static double SCALE = V_REF * 0.007652;
-
     double raw_avg = ((double)accumulator) / num_samples;
     double v_out = (raw_avg * CONVERSION_FACTOR) / V_OUT_MULTIPLE;
-    double vac = (v_out - OFFSET) / SCALE;
+    double vac = (v_out - OFFSET + zero_offset) / SCALE;
     return vac;
 }
 
 typedef struct ChannelData
 {
     uint adc_num;
+    // calibration offset for 0 kpa vacuum (atmospheric pressure),
+    // in volts AFTER converting to 5v scale
+    double zero_offset;
+    // state flag to indicate request to zero channel
+    bool needs_zero;
     uint sample_cnt;
     uint accumulator;
     uint sample_distribution[];
 } ChannelData_t;
 
 /**
- * Zero out all fields in ChannelData except `adc_num`
+ * Zero out all fields in ChannelData except `adc_num` and `zero_offset`
  * @param channel struct to reset
  */
 void reset(ChannelData_t* channel)
@@ -78,7 +83,7 @@ void reset(ChannelData_t* channel)
     void* start_p = &channel->sample_cnt;
     uint size_b = sizeof(ChannelData_t) + NUM_BUCKETS * sizeof(uint);
     // clear everything after adc_num field
-    memset(start_p, 0, size_b - sizeof(uint));
+    memset(start_p, 0, size_b - (start_p - (void*) channel));
 }
 
 /**
@@ -91,10 +96,33 @@ ChannelData_t* init_channel_data(uint adc_num)
     uint size_b = sizeof(ChannelData_t) + NUM_BUCKETS * sizeof(uint);
     ChannelData_t* channel = (ChannelData_t*)malloc(size_b);
     channel->adc_num = adc_num;
+    channel->zero_offset = 0;
     reset(channel);
     return channel;
 }
 
+/**
+ * If a zero for channel is requested, handle that request.
+ *
+ * Zeroing modifies `zero_offset` variable of channel to set
+ * current average pressure of channel's samples to be 0 kpa vacuum
+ * (atmospheric pressure).
+ *
+ * @param channel adc channel
+ */
+void try_zero(ChannelData_t* channel)
+{
+    if (!channel->needs_zero)
+    {
+        return;
+    }
+    double raw_avg = ((double)channel->accumulator) / channel->sample_cnt;
+    double v_out = (raw_avg * CONVERSION_FACTOR) / V_OUT_MULTIPLE;
+    // Note: zero offset is based on full scale (0-5V) value i.e. not
+    // the 0-3V3 scaled voltage by the divider
+    channel->zero_offset = OFFSET - v_out;
+    channel->needs_zero = false;
+}
 
 /**
  * Record a single measurement
@@ -125,7 +153,7 @@ void put_sample(ChannelData_t* channel, uint16_t adc_val)
 void log_stats(ChannelData_t* channel)
 {
     printf("Channel %d | avg %6.1f, percentiles [", channel->adc_num,
-           convert_raw(channel->accumulator, channel->sample_cnt));
+           convert_raw(channel->accumulator, channel->sample_cnt, channel->zero_offset));
     unsigned int samples = channel->sample_distribution[0];
     unsigned int bucket_i = 0;
     uint num_percentiles = sizeof(PERCENTILES) / sizeof(unsigned int);
@@ -140,10 +168,33 @@ void log_stats(ChannelData_t* channel)
             samples += channel->sample_distribution[bucket_i];
         }
         unsigned int raw_value = bucket_i << BUCKET_SHIFT;
-        double vacuum_kpa = convert_raw(raw_value, 1);
+        double vacuum_kpa = convert_raw(raw_value, 1, channel->zero_offset);
         printf("%d: %6.1f, ", *percentile_p, vacuum_kpa);
     }
     printf("]\n");
+}
+
+void record_period(uint dma_channel, ChannelData_t** adc_channels, dma_channel_config* channel_config_p)
+{
+    dma_channel_configure(dma_channel, channel_config_p, capture_buffer, &adc_hw->fifo, CAPTURE_DEPTH, true);
+    adc_run(true);
+    // perform conversion for last round of samples while capturing next round
+    for (int i = 0; i < CAPTURE_DEPTH; i++)
+    {
+        uint channel_i = i & 1;
+        put_sample(adc_channels[channel_i], capture_buffer[i]);
+    }
+    log_stats(adc_channels[0]);
+    log_stats(adc_channels[1]);
+    try_zero(adc_channels[0]);
+    try_zero(adc_channels[1]);
+    reset(adc_channels[0]);
+    reset(adc_channels[1]);
+    // wait for this capture to finish
+    dma_channel_wait_for_finish_blocking(dma_channel);
+    adc_run(false);
+    // drop anything remaining in FIFO to avoid contaminating next cycle
+    adc_fifo_drain();
 }
 
 int main()
@@ -171,24 +222,19 @@ int main()
     // transfer when ADC sample ready
     channel_config_set_dreq(&cfg, DREQ_ADC);
 
+    bool is_zeroed = false;
+
     while (1)
     {
-        dma_channel_configure(dma_chan, &cfg, capture_buffer, &adc_hw->fifo, CAPTURE_DEPTH, true);
-        adc_run(true);
-        // perform conversion for last round of samples while capturing next round
-        for (int i = 0; i < CAPTURE_DEPTH; i++)
+        record_period(dma_chan, adc_channels, &cfg);
+        // after collecting first period of data, request channels be zeroed
+        // the actual handling of zero will occur at beginning of next period using
+        // this period's data
+        if (!is_zeroed)
         {
-            uint channel_i = i & 1;
-            put_sample(adc_channels[channel_i], capture_buffer[i]);
+            adc_channels[0]->needs_zero = true;
+            adc_channels[1]->needs_zero = true;
+            is_zeroed = true;
         }
-        log_stats(adc_channels[0]);
-        log_stats(adc_channels[1]);
-        reset(adc_channels[0]);
-        reset(adc_channels[1]);
-        // wait for this capture to finish
-        dma_channel_wait_for_finish_blocking(dma_chan);
-        adc_run(false);
-        // drop anything remaining in FIFO to avoid contaminating next cycle
-        adc_fifo_drain();
     }
 }
